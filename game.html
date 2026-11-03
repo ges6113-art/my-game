@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>뇌절 오버로드</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+  body { background: #050510; color: #fff; font-family: 'Apple SD Gothic Neo', sans-serif; overflow: hidden; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+  #game-container { position: relative; width: 100vw; height: 100vh; max-width: 800px; max-height: 600px; background: #0d0d21; border: 3px solid #ff0055; box-shadow: 0 0 30px rgba(255,0,85,0.5); overflow: hidden; border-radius: 12px; }
+  canvas { display: block; width: 100%; height: 100%; background: radial-gradient(circle, #1a0033 0%, #050010 100%); }
+  
+  .ui-panel { position: absolute; top: 10px; left: 10px; right: 10px; display: flex; justify-content: space-between; pointer-events: none; z-index: 10; font-weight: bold; font-size: 14px; text-shadow: 2px 2px 4px #000; }
+  .bar-bg { width: 140px; height: 16px; background: #333; border: 2px solid #fff; border-radius: 8px; overflow: hidden; margin-top: 4px; }
+  .bar-fill { height: 100%; transition: width 0.1s; }
+  #hp-fill { background: #ff2a6d; width: 100%; }
+  #fever-fill { background: #05ffa1; width: 0%; }
+  
+  #cutin { position: absolute; top: 30%; left: -100%; width: 100%; height: 80px; background: linear-gradient(90deg, rgba(255,0,128,0.9), rgba(0,255,255,0.9)); transform: skewY(-5deg); display: flex; align-items: center; justify-content: center; font-size: 28px; font-weight: 900; font-style: italic; color: #fff; text-shadow: 3px 3px 0 #000; z-index: 50; transition: left 0.3s ease-out; pointer-events: none; }
+  
+  #level-modal { display: none; position: absolute; inset: 0; background: rgba(0,0,0,0.85); z-index: 100; flex-direction: column; align-items: center; justify-content: center; gap: 15px; padding: 20px; }
+  .card-btn { width: 90%; max-width: 350px; padding: 15px; background: linear-gradient(135deg, #1e0036, #3d0066); border: 2px solid #ff007f; border-radius: 12px; color: #fff; font-size: 16px; font-weight: bold; cursor: pointer; text-align: left; transition: transform 0.1s, box-shadow 0.1s; }
+  .card-btn:active { transform: scale(0.95); }
+  
+  #controls { position: absolute; bottom: 15px; left: 0; right: 0; display: flex; justify-content: space-around; padding: 0 20px; z-index: 20; }
+  .btn { width: 70px; height: 70px; background: rgba(255,255,255,0.15); border: 2px solid rgba(255,255,255,0.4); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: bold; color: #fff; backdrop-filter: blur(4px); touch-action: manipulation; }
+  .btn:active { background: rgba(255,0,128,0.5); }
+  #btn-ult { background: rgba(255, 0, 128, 0.4); border-color: #ff007f; width: 80px; height: 80px; }
+</style>
+</head>
+<body>
+
+<div id="game-container">
+  <canvas id="cvs"></canvas>
+  
+  <div class="ui-panel">
+    <div>
+      <div>헬창 오리 HP</div>
+      <div class="bar-bg"><div id="hp-fill" class="bar-fill"></div></div>
+      <div style="margin-top: 4px;">LV <span id="lvl-txt">1</span> | WAVE <span id="wave-txt">1</span></div>
+    </div>
+    <div style="text-align: right;">
+      <div>뇌절 게이지 (R/버튼)</div>
+      <div class="bar-bg"><div id="fever-fill" class="bar-fill"></div></div>
+      <div style="margin-top: 4px; color: #05ffa1;" id="score-txt">SCORE: 0</div>
+    </div>
+  </div>
+
+  <div id="cutin">⚡ 뇌절의 극의: 무지개 멸망 빔!!! ⚡</div>
+
+  <div id="level-modal">
+    <h2 style="color: #05ffa1; font-size: 24px; margin-bottom: 10px;">🔥 뇌절 스킬 선택 🔥</h2>
+    <div id="card-container" style="display: flex; flex-direction: column; gap: 10px; width: 100%; align-items: center;"></div>
+  </div>
+
+  <div id="controls">
+    <div class="btn" id="btn-dash">대시<br>(SPACE)</div>
+    <div class="btn" id="btn-ult">각성 빔<br>(R)</div>
+  </div>
+</div>
+
+<script>
+const cvs = document.getElementById('cvs');
+const ctx = cvs.getContext('2d');
+let W = cvs.width = 800;
+let H = cvs.height = 600;
+
+function resize() {
+  const rect = cvs.getBoundingClientRect();
+  W = cvs.width = rect.width;
+  H = cvs.height = rect.height;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// 게임 상태
+let gameState = 'PLAY';
+let frame = 0;
+let score = 0;
+let wave = 1;
+let level = 1;
+let exp = 0;
+let expNext = 100;
+let shake = 0;
+
+// 오디오 합성
+const AudioCtx = window.AudioContext || window.webkitAudioContext;
+let audioCtx = null;
+function playSfx(type) {
+  if (!audioCtx) audioCtx = new AudioCtx();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  try {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    
+    if (type === 'shot') {
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(400, audioCtx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(100, audioCtx.currentTime + 0.08);
+      gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+      gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.08);
+      osc.start(); osc.stop(audioCtx.currentTime + 0.08);
+    } else if (type === 'boom') {
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(150, audioCtx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(20, audioCtx.currentTime + 0.3);
+      gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+      gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.3);
+      osc.start(); osc.stop(audioCtx.currentTime + 0.3);
+    } else if (type === 'ult') {
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(200, audioCtx.currentTime);
+      osc.frequency.linearRampToValueAtTime(800, audioCtx.currentTime + 0.5);
+      gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+      gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.5);
+      osc.start(); osc.stop(audioCtx.currentTime + 0.5);
+    }
+  } catch(e){}
+}
+
+// 플레이어
+const player = {
+  x: W / 2, y: H / 2,
+  r: 20,
+  hp: 1000, maxHp: 1000,
+  fever: 0,
+  speed: 6,
+  headSize: 1,
+  bulletMult: 1,
+  ultActive: 0
+};
+
+// 키보드/터치 입력
+const keys = {};
+let mouseX = W / 2, mouseY = H / 2;
+window.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code === 'Space') doDash();
+  if (e.code === 'KeyR') doUlt();
+});
+window.addEventListener('keyup', e => keys[e.code] = false);
+cvs.addEventListener('mousemove', e => {
+  const rect = cvs.getBoundingClientRect();
+  mouseX = e.clientX - rect.left;
+  mouseY = e.clientY - rect.top;
+});
+
+// 엔티티 배열
+let bullets = [];
+let enemies = [];
+let particles = [];
+let popups = [];
+
+// 대시
+function doDash() {
+  if (gameState !== 'PLAY') return;
+  const angle = Math.atan2(mouseY - player.y, mouseX - player.x);
+  player.x += Math.cos(angle) * 150;
+  player.y += Math.sin(angle) * 150;
+  player.x = Math.max(30, Math.min(W - 30, player.x));
+  player.y = Math.max(30, Math.min(H - 30, player.y));
+  shake = 15;
+  playSfx('boom');
+  
+  // 폭발 잔상
+  for (let i = 0; i < 20; i++) {
+    particles.push({
+      x: player.x, y: player.y,
+      vx: (Math.random() - 0.5) * 12, vy: (Math.random() - 0.5) * 12,
+      r: Math.random() * 8 + 4, color: '#ff007f', life: 20
+    });
+  }
+}
+
+// 필살기
+function doUlt() {
+  if (player.fever < 100 || gameState !== 'PLAY') return;
+  player.fever = 0;
+  player.ultActive = 120;
+  shake = 30;
+  playSfx('ult');
+  
+  const cutin = document.getElementById('cutin');
+  cutin.style.left = '0%';
+  setTimeout(() => cutin.style.left = '100%', 800);
+  setTimeout(() => cutin.style.left = '-100%', 1200);
+}
+
+document.getElementById('btn-dash').addEventListener('click', doDash);
+document.getElementById('btn-ult').addEventListener('click', doUlt);
+
+// 적 생성
+function spawnEnemy() {
+  if (enemies.length > 30 + wave * 5) return;
+  const isBoss = (frame % 600 === 0 && wave % 2 === 0);
+  const side = Math.floor(Math.random() * 4);
+  let x, y;
+  if (side === 0) { x = Math.random() * W; y = -40; }
+  else if (side === 1) { x = W + 40; y = Math.random() * H; }
+  else if (side === 2) { x = Math.random() * W; y = H + 40; }
+  else { x = -40; y = Math.random() * H; }
+
+  enemies.push({
+    x, y,
+    r: isBoss ? 50 : 18,
+    hp: isBoss ? 50000 * wave : 200 * wave,
+    maxHp: isBoss ? 50000 * wave : 200 * wave,
+    speed: isBoss ? 1.2 : 2 + Math.random() * 1.5,
+    isBoss,
+    name: isBoss ? '👑 흑화 민초신 PRIME' : (Math.random() > 0.5 ? '🥦 민초' : '🍕 하와이안')
+  });
+}
+
+// 레벨업 스킬 카드
+const SKILLS = [
+  { name: '🔥 치킨 탄막 10배 폭증', apply: () => player.bulletMult += 2 },
+  { name: '🤡 대가리 3배 확대 (히트박스 동일)', apply: () => player.headSize += 0.8 },
+  { name: '⚡ 이동속도 + 떡볶이 광속 가속', apply: () => player.speed += 3 },
+  { name: '💖 치킨 힐링 (체력 100% 회복)', apply: () => player.hp = player.maxHp }
+];
+
+function showLevelUp() {
+  gameState = 'PAUSE';
+  const modal = document.getElementById('level-modal');
+  const container = document.getElementById('card-container');
+  container.innerHTML = '';
+  modal.style.display = 'flex';
+
+  SKILLS.sort(() => Math.random() - 0.5).slice(0, 3).forEach(skill => {
+    const btn = document.createElement('button');
+    btn.className = 'card-btn';
+    btn.innerText = skill.name;
+    btn.onclick = () => {
+      skill.apply();
+      modal.style.display = 'none';
+      gameState = 'PLAY';
+      requestAnimationFrame(loop);
+    };
+    container.appendChild(btn);
+  });
+}
+
+function addExp(amount) {
+  exp += amount;
+  if (exp >= expNext) {
+    exp = 0;
+    level++;
+    expNext = Math.floor(expNext * 1.5);
+    showLevelUp();
+  }
+}
+
+// 메인 루프
+function loop() {
+  if (gameState !== 'PLAY') return;
+  frame++;
+
+  // 화면 진동
+  ctx.save();
+  if (shake > 0) {
+    ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+    shake *= 0.9;
+  }
+
+  ctx.clearRect(0, 0, W, H);
+
+  // 플레이어 이동
+  if (keys['KeyW'] || keys['ArrowUp']) player.y -= player.speed;
+  if (keys['KeyS'] || keys['ArrowDown']) player.y += player.speed;
+  if (keys['KeyA'] || keys['ArrowLeft']) player.x -= player.speed;
+  if (keys['KeyD'] || keys['ArrowRight']) player.x += player.speed;
+  player.x = Math.max(30, Math.min(W - 30, player.x));
+  player.y = Math.max(30, Math.min(H - 30, player.y));
+
+  // 자동 발사 (치킨 탄막)
+  if (frame % 5 === 0) {
+    playSfx('shot');
+    for (let i = 0; i < player.bulletMult; i++) {
+      const angle = Math.atan2(mouseY - player.y, mouseX - player.x) + (Math.random() - 0.5) * 0.4;
+      bullets.push({
+        x: player.x, y: player.y,
+        vx: Math.cos(angle) * 14, vy: Math.sin(angle) * 14,
+        r: 6, dmg: 99999
+      });
+    }
+  }
+
+  // 필살기 빔 처리
+  if (player.ultActive > 0) {
+    player.ultActive--;
+    shake = 10;
+    ctx.fillStyle = `hsl(${frame * 20}, 100%, 50%)`;
+    ctx.fillRect(0, player.y - 40, W, 80);
+    
+    enemies.forEach(e => {
+      if (Math.abs(e.y - player.y) < 60) {
+        e.hp -= 999999;
+        popups.push({ x: e.x, y: e.y, txt: '999999999!', life: 20 });
+      }
+    });
+  }
+
+  // 총알 업데이트
+  bullets.forEach((b, bi) => {
+    b.x += b.vx; b.y += b.vy;
+    ctx.fillStyle = '#ffcc00';
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+
+    if (b.x < 0 || b.x > W || b.y < 0 || b.y > H) bullets.splice(bi, 1);
+  });
+
+  // 적 스폰 & 업데이트
+  if (frame % 30 === 0) spawnEnemy();
+  
+  enemies.forEach((e, ei) => {
+    const angle = Math.atan2(player.y - e.y, player.x - e.x);
+    e.x += Math.cos(angle) * e.speed;
+    e.y += Math.sin(angle) * e.speed;
+
+    // 그려주기
+    ctx.fillStyle = e.isBoss ? '#00ffcc' : '#00ff66';
+    ctx.beginPath(); ctx.arc(e.x, e.y, e.r, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.font = '12px sans-serif';
+    ctx.fillText(e.name, e.x - 20, e.y - e.r - 5);
+
+    // 총알 충돌
+    bullets.forEach((b, bi) => {
+      const dist = Math.hypot(b.x - e.x, b.y - e.y);
+      if (dist < b.r + e.r) {
+        e.hp -= b.dmg;
+        bullets.splice(bi, 1);
+        player.fever = Math.min(100, player.fever + 1);
+        popups.push({ x: e.x, y: e.y, txt: '999,999!', life: 15 });
+
+        if (e.hp <= 0) {
+          playSfx('boom');
+          enemies.splice(ei, 1);
+          score += e.isBoss ? 50000 : 1000;
+          addExp(e.isBoss ? 300 : 50);
+          if (e.isBoss) wave++;
+        }
+      }
+    });
+
+    // 플레이어 충돌
+    if (Math.hypot(player.x - e.x, player.y - e.y) < player.r + e.r) {
+      player.hp -= 2;
+      shake = 5;
+    }
+  });
+
+  // 파티클 & 팝업 업데이트
+  popups.forEach((p, pi) => {
+    p.y -= 1; p.life--;
+    ctx.fillStyle = '#ff0055';
+    ctx.font = 'bold 14px sans-serif';
+    ctx.fillText(p.txt, p.x, p.y);
+    if (p.life <= 0) popups.splice(pi, 1);
+  });
+
+  // 플레이어 그리기 (헬창 오리)
+  ctx.save();
+  ctx.translate(player.x, player.y);
+  
+  // 몸통
+  ctx.fillStyle = '#ffea00';
+  ctx.beginPath(); ctx.arc(0, 0, player.r, 0, Math.PI * 2); ctx.fill();
+  
+  // 머리 (뇌절 크기 조절)
+  ctx.beginPath(); 
+  ctx.arc(0, -15 * player.headSize, 12 * player.headSize, 0, Math.PI * 2); 
+  ctx.fill();
+  
+  // 부리
+  ctx.fillStyle = '#ff5500';
+  ctx.fillRect(5 * player.headSize, -18 * player.headSize, 12, 6);
+  ctx.restore();
+
+  // UI 갱신
+  document.getElementById('hp-fill').style.width = (player.hp / player.maxHp * 100) + '%';
+  document.getElementById('fever-fill').style.width = player.fever + '%';
+  document.getElementById('score-txt').innerText = `SCORE: ${score.toLocaleString()}`;
+  document.getElementById('lvl-txt').innerText = level;
+  document.getElementById('wave-txt').innerText = wave;
+
+  ctx.restore();
+  requestAnimationFrame(loop);
+}
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
